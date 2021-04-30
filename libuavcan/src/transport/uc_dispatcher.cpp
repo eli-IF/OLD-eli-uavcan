@@ -185,8 +185,101 @@ void Dispatcher::handleFrame(const CanRxFrame& can_frame)
         break;
     }
     }
+    // ADDED SMART BATTERY PARSING HERE
+    if (frame.getSrcNodeID() == 0x16) {
+      if (parseBatteryFrame(frame)) {
+        updateSmartBatteryPayloadMsg();
+        publishSmartBatteryPayloadMsg();
+      }
+    }
 }
 
+// ----- BEGIN Smart Battery methods -----
+
+bool Dispatcher::parseBatteryFrame(RxFrame frame) {
+    // Returns true if this frame is the end of a transfer
+    // and the CRC is valid.
+    // Returns false otherwise.
+    unsigned payload_length = frame.getPayloadLen();
+    const uint8_t* payload_ptr = frame.getPayloadPtr();
+    bool valid_frame = false;
+    unsigned payload_index_offset = 0;
+    bool end_of_msg = false;
+    if (frame.isStartOfTransfer()) {
+        valid_frame = true;
+        previous_battery_frame_toggle_bit_ = false;
+        // The first two bytes of the frame are the checksum
+        // The remaining bytes are the payload
+        battery_msg_crc_ = payload_ptr[0] + (payload_ptr[1] << 8);
+        battery_msg_buffer_index_ = 0;
+        payload_index_offset = 2;
+        payload_length -= 2;
+    }
+    else if (frame.isEndOfTransfer()) {
+        valid_frame = true;
+        end_of_msg = true;
+    }
+    else if (previous_battery_frame_toggle_bit_ != frame.getToggle()) {
+        valid_frame = true;
+        previous_battery_frame_toggle_bit_ = !previous_battery_frame_toggle_bit_;
+    }
+    else {
+        // The frame is out of place. Reset and wait for another start of transfer.
+        previous_battery_frame_toggle_bit_ = false;
+    }
+    // Populate the buffer with the new frame data
+    if (valid_frame) {
+        for (unsigned i = 0; i < payload_length; ++i) {
+            battery_msg_buffer_[i + battery_msg_buffer_index_] = payload_ptr[i + payload_index_offset];
+        }
+        battery_msg_buffer_index_ += payload_length;
+    }
+
+    if (end_of_msg && isChecksumValid()) {
+        return true;
+    }
+    return false;
+}
+
+bool Dispatcher::isChecksumValid() {
+  uint16_t checksum_calc_value = 0xFFFF;
+  unsigned buffer_index = 0;
+  while (buffer_index < BATTERY_MSG_LEN) {
+    checksum_calc_value = crcCalculateNext(checksum_calc_value, battery_msg_buffer_[buffer_index]);
+    buffer_index++;
+  }
+  return (battery_msg_crc_ == checksum_calc_value);
+}
+
+uint16_t Dispatcher::crcCalculateNext(uint16_t current_value, uint8_t next_byte) {
+  current_value ^= static_cast<uint8_t>(next_byte) << 8U;
+  for (uint8_t bit = 8; bit > 0; --bit) {
+    if ((current_value & 0x8000U) != 0) {
+      current_value = (current_value << 1) ^ 0x1021U;
+    }
+    else {
+      current_value = current_value << 1U;
+    }
+  }
+  return current_value;
+}
+
+void Dispatcher::updateSmartBatteryPayloadMsg() {
+  smart_battery_payload_.timestamp = hrt_absolute_time();
+  for(int i=0; i<BATTERY_MSG_LEN; ++i) {
+    smart_battery_payload_.payload[i] = battery_msg_buffer_[i];
+  }
+}
+
+void Dispatcher::publishSmartBatteryPayloadMsg() {
+    if (smart_battery_payload_publisher_ != nullptr) {
+      orb_publish(ORB_ID(smart_battery_payload), smart_battery_payload_publisher_, &smart_battery_payload_);
+    } else {
+      smart_battery_payload_publisher_ = orb_advertise(ORB_ID(smart_battery_payload), &smart_battery_payload_);
+    }
+}
+
+// ----- END Smart Battery methods -----
 #if UAVCAN_TINY
 void Dispatcher::handleLoopbackFrame(const CanRxFrame&)
 {

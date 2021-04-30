@@ -1,3 +1,4 @@
+
 /*
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
@@ -14,6 +15,10 @@
 #include <uavcan/transport/outgoing_transfer_registry.hpp>
 #include <uavcan/transport/can_io.hpp>
 #include <uavcan/util/linked_list.hpp>
+
+#include <drivers/drv_hrt.h>
+#include <uORB/uORB.h>
+#include <uORB/topics/smart_battery_payload.h>
 
 namespace uavcan
 {
@@ -132,6 +137,21 @@ class UAVCAN_EXPORT Dispatcher : Noncopyable
 
     void notifyRxFrameListener(const CanRxFrame& can_frame, CanIOFlags flags);
 
+    // ----- BEGIN Smart Battery functions & variables
+    const static int BATTERY_MSG_LEN = 48;
+    bool parseBatteryFrame(const RxFrame frame);
+    bool isChecksumValid();
+    uint16_t crcCalculateNext(uint16_t current_value, uint8_t next_byte);
+    void updateSmartBatteryPayloadMsg();
+    void publishSmartBatteryPayloadMsg();
+
+    int battery_msg_buffer_index_ = 0;
+    uint8_t battery_msg_buffer_[BATTERY_MSG_LEN];
+    bool previous_battery_frame_toggle_bit_ = false;
+    uint16_t battery_msg_crc_ = 0;
+    smart_battery_payload_s smart_battery_payload_;
+    orb_advert_t smart_battery_payload_publisher_;
+    // ----- END Smart Battery functions & variables
 public:
     Dispatcher(ICanDriver& driver, IPoolAllocator& allocator, ISystemClock& sysclock)
         : canio_(driver, allocator, sysclock)
@@ -142,6 +162,7 @@ public:
 #endif
         , self_node_id_(NodeID::Broadcast)  // Default
         , self_node_id_is_set_(false)
+        , smart_battery_payload_publisher_(nullptr)
     { }
 
     /**
